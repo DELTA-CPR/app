@@ -1,121 +1,194 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
-void main() {
-  runApp(const MyApp());
-}
+import 'detection/camera_session.dart';
+import 'detection/detection_controller.dart';
 
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
+void main() => runApp(const DetectorApp());
 
-  // This widget is the root of your application.
+class DetectorApp extends StatelessWidget {
+  const DetectorApp({super.key, this.createSession = CameraSession.new});
+  final DetectionSession Function() createSession;
+
   @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Flutter Demo',
-      theme: ThemeData(
-        // This is the theme of your application.
-        //
-        // TRY THIS: Try running your application with "flutter run". You'll see
-        // the application has a purple toolbar. Then, without quitting the app,
-        // try changing the seedColor in the colorScheme below to Colors.green
-        // and then invoke "hot reload" (save your changes or press the "hot
-        // reload" button in a Flutter-supported IDE, or press "r" if you used
-        // the command line to start the app).
-        //
-        // Notice that the counter didn't reset back to zero; the application
-        // state is not lost during the reload. To reset the state, use hot
-        // restart instead.
-        //
-        // This works for code too, not just values: Most code changes can be
-        // tested with just a hot reload.
-        colorScheme: .fromSeed(seedColor: Colors.deepPurple),
+  Widget build(BuildContext context) => MaterialApp(
+    title: 'Scene detector',
+    debugShowCheckedModeBanner: false,
+    theme: ThemeData(
+      colorScheme: ColorScheme.fromSeed(
+        seedColor: const Color(0xff52dba0),
+        brightness: Brightness.dark,
       ),
-      home: const MyHomePage(title: 'Flutter Demo Home Page'),
-    );
-  }
+    ),
+    home: DetectorScreen(createSession: createSession),
+  );
 }
 
-class MyHomePage extends StatefulWidget {
-  const MyHomePage({super.key, required this.title});
+class DetectorScreen extends StatefulWidget {
+  const DetectorScreen({super.key, required this.createSession});
+  final DetectionSession Function() createSession;
+  @override
+  State<DetectorScreen> createState() => _DetectorScreenState();
+}
 
-  // This widget is the home page of your application. It is stateful, meaning
-  // that it has a State object (defined below) that contains fields that affect
-  // how it looks.
-
-  // This class is the configuration for the state. It holds the values (in this
-  // case the title) provided by the parent (in this case the App widget) and
-  // used by the build method of the State. Fields in a Widget subclass are
-  // always marked "final".
-
-  final String title;
+class _DetectorScreenState extends State<DetectorScreen>
+    with WidgetsBindingObserver {
+  late final DetectionController controller;
 
   @override
-  State<MyHomePage> createState() => _MyHomePageState();
-}
-
-class _MyHomePageState extends State<MyHomePage> {
-  int _counter = 0;
-
-  void _incrementCounter() {
-    setState(() {
-      // This call to setState tells the Flutter framework that something has
-      // changed in this State, which causes it to rerun the build method below
-      // so that the display can reflect the updated values. If we changed
-      // _counter without calling setState(), then the build method would not be
-      // called again, and so nothing would appear to happen.
-      _counter++;
-    });
+  void initState() {
+    super.initState();
+    controller = DetectionController(widget.createSession);
+    WidgetsBinding.instance.addObserver(this);
   }
 
   @override
-  Widget build(BuildContext context) {
-    // This method is rerun every time setState is called, for instance as done
-    // by the _incrementCounter method above.
-    //
-    // The Flutter framework has been optimized to make rerunning build methods
-    // fast, so that you can just rebuild anything that needs updating rather
-    // than having to individually change instances of widgets.
-    return Scaffold(
-      appBar: AppBar(
-        // TRY THIS: Try changing the color here to a specific color (to
-        // Colors.amber, perhaps?) and trigger a hot reload to see the AppBar
-        // change color while the other colors stay the same.
-        backgroundColor: Theme.of(context).colorScheme.inversePrimary,
-        // Here we take the value from the MyHomePage object that was created by
-        // the App.build method, and use it to set our appbar title.
-        title: Text(widget.title),
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.paused ||
+        state == AppLifecycleState.hidden ||
+        state == AppLifecycleState.detached) {
+      controller.stop(suspend: true);
+    } else if (state == AppLifecycleState.resumed) {
+      controller.resume();
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    controller.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: const Text('Scene detector')),
+    body: SafeArea(
+      child: ListenableBuilder(
+        listenable: controller,
+        builder: (context, _) {
+          final phase = controller.phase;
+          final frame = controller.frame;
+          final running =
+              phase == DetectionPhase.live || phase == DetectionPhase.starting;
+          return Padding(
+            padding: const EdgeInsets.fromLTRB(16, 0, 16, 16),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Expanded(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: Theme.of(context).colorScheme.surfaceContainerLow,
+                      borderRadius: BorderRadius.circular(16),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(16),
+                      child: frame == null
+                          ? _CameraStatus(
+                              phase: phase,
+                              message: controller.errorMessage,
+                              errorTitle: controller.errorTitle,
+                            )
+                          : Image.memory(
+                              frame.jpeg,
+                              fit: BoxFit.contain,
+                              gaplessPlayback: true,
+                              semanticLabel: 'Camera frame with person boxes and ArUco marker outlines',
+                            ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 16),
+                if (frame != null)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 12),
+                    child: Text(
+                      'People ${frame.people.length}   ·   ArUco markers ${frame.markers.length}',
+                      style: Theme.of(context).textTheme.titleMedium,
+                    ),
+                  ),
+                if (running)
+                  OutlinedButton.icon(
+                    onPressed: controller.stop,
+                    icon: const Icon(Icons.stop_rounded),
+                    label: const Text('Stop camera'),
+                  )
+                else
+                  FilledButton.icon(
+                    onPressed: controller.start,
+                    icon: const Icon(Icons.videocam_outlined),
+                    label: Text(
+                      phase == DetectionPhase.error
+                          ? 'Retry camera'
+                          : 'Start camera',
+                    ),
+                  ),
+              ],
+            ),
+          );
+        },
       ),
-      body: Center(
-        // Center is a layout widget. It takes a single child and positions it
-        // in the middle of the parent.
+    ),
+  );
+}
+
+class _CameraStatus extends StatelessWidget {
+  const _CameraStatus({
+    required this.phase,
+    required this.message,
+    required this.errorTitle,
+  });
+  final DetectionPhase phase;
+  final String? message;
+  final String errorTitle;
+
+  @override
+  Widget build(BuildContext context) {
+    final (title, body) = switch (phase) {
+      DetectionPhase.error => (
+        errorTitle,
+        message ?? 'Try opening the camera again.',
+      ),
+      DetectionPhase.starting => (
+        'Starting camera',
+        'Preparing the on-device detector…',
+      ),
+      _ => (
+        'Camera ready',
+        'Detect people and 4×4 ArUco markers (DICT_4X4_50) on this device.',
+      ),
+    };
+    final theme = Theme.of(context);
+    return Center(
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.all(24),
         child: Column(
-          // Column is also a layout widget. It takes a list of children and
-          // arranges them vertically. By default, it sizes itself to fit its
-          // children horizontally, and tries to be as tall as its parent.
-          //
-          // Column has various properties to control how it sizes itself and
-          // how it positions its children. Here we use mainAxisAlignment to
-          // center the children vertically; the main axis here is the vertical
-          // axis because Columns are vertical (the cross axis would be
-          // horizontal).
-          //
-          // TRY THIS: Invoke "debug painting" (choose the "Toggle Debug Paint"
-          // action in the IDE, or press "p" in the console), to see the
-          // wireframe for each widget.
-          mainAxisAlignment: .center,
+          mainAxisSize: MainAxisSize.min,
           children: [
-            const Text('You have pushed the button this many times:'),
+            if (phase == DetectionPhase.starting)
+              const CircularProgressIndicator()
+            else
+              Icon(
+                phase == DetectionPhase.error
+                    ? Icons.videocam_off_outlined
+                    : Icons.center_focus_strong,
+                size: 40,
+                color: theme.colorScheme.primary,
+              ),
+            const SizedBox(height: 16),
             Text(
-              '$_counter',
-              style: Theme.of(context).textTheme.headlineMedium,
+              title,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.titleLarge,
+            ),
+            const SizedBox(height: 8),
+            Text(
+              body,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodyMedium,
             ),
           ],
         ),
-      ),
-      floatingActionButton: FloatingActionButton(
-        onPressed: _incrementCounter,
-        tooltip: 'Increment',
-        child: const Icon(Icons.add),
       ),
     );
   }
